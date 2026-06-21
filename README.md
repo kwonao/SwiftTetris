@@ -20,10 +20,10 @@ SwiftUIだけで画面と操作を構築し、Swift Concurrencyでゲーム進�
 
 ## 動作環境
 
-- Xcode 26.3
+- Xcode 27+
 - Swift 5
-- iOS 18.0+
-- macOS 15.0+
+- iOS / iPadOS 27.0+
+- macOS 27.0+
 
 ## 実行方法
 
