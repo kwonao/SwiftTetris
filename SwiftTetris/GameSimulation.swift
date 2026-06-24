@@ -2,8 +2,9 @@ import Foundation
 
 /// ゲーム状態を排他的に所有するactorです。
 ///
-/// ユーザー操作と自動落下は別々のTaskから到着しますが、状態変更は必ずこのactor内で
-/// 直列化されます。そのため、盤面を書き換えている途中に別操作が割り込むことはありません。
+/// ユーザー入力と自動落下tickは`GameEventStreams.merge`で1つのイベント列に合成され、
+/// 状態変更は必ずこのactor内で直列化されます。そのため、盤面を書き換えている途中に
+/// 別操作が割り込むことはありません。
 actor GameSimulation {
     private var board: [[TetrominoKind?]]
     private var activePiece: ActivePiece?
@@ -12,6 +13,7 @@ actor GameSimulation {
     private var score = 0
     private var clearedLines = 0
     private var phase: GamePhase = .running
+    private var gameID = 0
     private var bag: [TetrominoKind] = []
     private var canHold = true
 
@@ -29,10 +31,10 @@ actor GameSimulation {
         )
     }
 
-    /// 操作Taskと落下Taskをstructured concurrencyで管理し、
+    /// 合成済みのイベント列を`for await`で処理し、
     /// 状態変化を`AsyncStream`としてUIへ公開します。
     func snapshots(
-        commands: AsyncStream<GameCommand>
+        events: AsyncStream<GameEvent>
     ) -> AsyncStream<GameSnapshot> {
         let initialSnapshot = makeSnapshot()
 
@@ -40,32 +42,10 @@ actor GameSimulation {
             continuation.yield(initialSnapshot)
 
             let producer = Task {
-                await withTaskGroup(of: Void.self) { group in
-                    group.addTask { [weak self] in
-                        for await command in commands {
-                            guard !Task.isCancelled, let self else { return }
-                            await self.process(command)
-                            continuation.yield(await self.makeSnapshot())
-                        }
-                    }
-
-                    group.addTask { [weak self] in
-                        while !Task.isCancelled {
-                            guard let self else { return }
-                            let delay = await self.dropDelay
-
-                            do {
-                                try await Task.sleep(for: .milliseconds(delay))
-                            } catch {
-                                return
-                            }
-
-                            await self.process(.tick)
-                            continuation.yield(await self.makeSnapshot())
-                        }
-                    }
-
-                    await group.waitForAll()
+                for await event in events {
+                    guard !Task.isCancelled else { break }
+                    await self.process(event)
+                    continuation.yield(await self.makeSnapshot())
                 }
 
                 continuation.finish()
@@ -81,14 +61,17 @@ actor GameSimulation {
         clearedLines / 10 + 1
     }
 
-    private var dropDelay: Int {
-        max(90, 700 - (level - 1) * 55)
-    }
-
-    private func process(_ command: GameCommand) {
-        switch command {
+    private func process(_ event: GameEvent) {
+        switch event {
         case .tick:
             tick()
+        case let .input(input):
+            process(input)
+        }
+    }
+
+    private func process(_ input: GameInput) {
+        switch input {
         case .newGame:
             newGame()
         case .togglePause:
@@ -117,6 +100,7 @@ actor GameSimulation {
         score = 0
         clearedLines = 0
         phase = .running
+        gameID += 1
         bag = TetrominoKind.allCases.shuffled()
         nextKind = takeFromBag()
         canHold = true
@@ -298,7 +282,8 @@ actor GameSimulation {
             heldKind: heldKind,
             score: score,
             clearedLines: clearedLines,
-            phase: phase
+            phase: phase,
+            gameID: gameID
         )
     }
 

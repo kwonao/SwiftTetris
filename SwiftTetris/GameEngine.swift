@@ -1,25 +1,10 @@
 import Foundation
 import Observation
 
-nonisolated enum GamePhase: Equatable, Sendable {
+nonisolated enum GamePhase: Hashable, Sendable {
     case running
     case paused
     case gameOver
-}
-
-/// UIからゲームへ送る操作です。
-/// `Sendable`な値として表すことで、actor境界を安全に越えられます。
-nonisolated enum GameCommand: Sendable {
-    case tick
-    case newGame
-    case togglePause
-    case pause
-    case moveLeft
-    case moveRight
-    case softDrop
-    case hardDrop
-    case rotate(clockwise: Bool)
-    case hold
 }
 
 /// actor内の状態をUIへ渡す、変更不可能なスナップショットです。
@@ -37,6 +22,7 @@ nonisolated struct GameSnapshot: Sendable {
     let score: Int
     let clearedLines: Int
     let phase: GamePhase
+    let gameID: Int
 
     var level: Int {
         clearedLines / 10 + 1
@@ -56,14 +42,15 @@ nonisolated struct GameSnapshot: Sendable {
         heldKind: nil,
         score: 0,
         clearedLines: 0,
-        phase: .running
+        phase: .running,
+        gameID: 0
     )
 }
 
 /// SwiftUIとactorの橋渡しを行う、MainActor上の表示モデルです。
 ///
-/// UI操作は`AsyncStream`へ送り、`GameSimulation`から届くスナップショットを
-/// Observationが監視できるプロパティへ反映します。
+/// UI入力と時間tickをそれぞれ`AsyncStream`として受け取り、`GameSimulation`から届く
+/// スナップショットをObservationが監視できるプロパティへ反映します。
 @MainActor
 @Observable
 final class GameEngine {
@@ -78,27 +65,41 @@ final class GameEngine {
     private(set) var score = 0
     private(set) var clearedLines = 0
     private(set) var phase: GamePhase = .running
+    private(set) var gameID = 0
 
     @ObservationIgnored private let simulation = GameSimulation()
-    @ObservationIgnored private var commandContinuation:
-        AsyncStream<GameCommand>.Continuation?
+    @ObservationIgnored private var inputContinuation:
+        AsyncStream<GameInput>.Continuation?
+    @ObservationIgnored private var tickContinuation:
+        AsyncStream<GameTick>.Continuation?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
 
     var level: Int {
         clearedLines / 10 + 1
     }
 
+    var tickConfiguration: GameTickConfiguration {
+        GameTickConfiguration(level: level, phase: phase, gameID: gameID)
+    }
+
     func startLoop() {
         guard observationTask == nil else { return }
 
-        let (commands, continuation) = AsyncStream.makeStream(
-            of: GameCommand.self,
+        let (inputs, inputContinuation) = AsyncStream.makeStream(
+            of: GameInput.self,
             bufferingPolicy: .bufferingNewest(32)
         )
-        commandContinuation = continuation
+        let (ticks, tickContinuation) = AsyncStream.makeStream(
+            of: GameTick.self,
+            bufferingPolicy: .bufferingNewest(8)
+        )
+        self.inputContinuation = inputContinuation
+        self.tickContinuation = tickContinuation
+
+        let events = GameEventStreams.merge(ticks: ticks, inputs: inputs)
 
         observationTask = Task { [weak self, simulation] in
-            let snapshots = await simulation.snapshots(commands: commands)
+            let snapshots = await simulation.snapshots(events: events)
 
             for await snapshot in snapshots {
                 guard let self else { return }
@@ -108,10 +109,24 @@ final class GameEngine {
     }
 
     func stopLoop() {
-        commandContinuation?.finish()
-        commandContinuation = nil
+        inputContinuation?.finish()
+        inputContinuation = nil
+        tickContinuation?.finish()
+        tickContinuation = nil
         observationTask?.cancel()
         observationTask = nil
+    }
+
+    func runTickSequence(for configuration: GameTickConfiguration) async {
+        startLoop()
+
+        guard configuration.isRunning else { return }
+
+        let ticks = GameTickSequence(interval: configuration.interval)
+        for await tick in ticks {
+            guard !Task.isCancelled else { return }
+            tickContinuation?.yield(tick)
+        }
     }
 
     func newGame() {
@@ -158,8 +173,8 @@ final class GameEngine {
         return board[point.y][point.x]
     }
 
-    private func send(_ command: GameCommand) {
-        commandContinuation?.yield(command)
+    private func send(_ input: GameInput) {
+        inputContinuation?.yield(input)
     }
 
     private func apply(_ snapshot: GameSnapshot) {
@@ -171,5 +186,6 @@ final class GameEngine {
         score = snapshot.score
         clearedLines = snapshot.clearedLines
         phase = snapshot.phase
+        gameID = snapshot.gameID
     }
 }

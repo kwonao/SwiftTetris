@@ -27,8 +27,9 @@ struct ContentView: View {
         }
         .tint(.cyan)
         .preferredColorScheme(.dark)
-        .onAppear {
-            game.startLoop()
+        .task(id: game.tickConfiguration) {
+            let configuration = game.tickConfiguration
+            await game.runTickSequence(for: configuration)
         }
         .onDisappear {
             game.stopLoop()

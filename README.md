@@ -1,8 +1,8 @@
 # SwiftTetris
 
-SwiftUIだけで画面と操作を構築し、Swift Concurrencyでゲーム進行を管理するテトリスです。
+SwiftUIだけで画面と操作を構築し、Swift Concurrencyの`AsyncSequence`でゲーム進行を管理するテトリスです。
 
-遊べるアプリとして成立させつつ、Swift初学者が値型、Observation、Actor、`AsyncStream`などをコードから学べる構成を目指しています。SpriteKitは使用していません。
+「for await で動かすテトリス: AsyncSequenceによるSwiftUIゲームループ設計」の題材として、遊べるアプリでありながら、Swift初学者が値型、Observation、Actor、`AsyncStream`、キャンセルをコードから学べる構成を目指しています。SpriteKitは使用していません。
 
 ## 主な機能
 
@@ -46,9 +46,12 @@ SwiftUIだけで画面と操作を構築し、Swift Concurrencyでゲーム進�
 
 ```mermaid
 flowchart LR
-    UI["SwiftUI Views"] -->|"GameCommand"| Engine["GameEngine @MainActor"]
-    Engine -->|"AsyncStream"| Simulation["GameSimulation actor"]
-    Timer["Auto Drop Task"] -->|tick| Simulation
+    UI["SwiftUI Views"] -->|"GameInput"| Input["AsyncStream<GameInput>"]
+    Task[".task(id: tickConfiguration)"] --> TickSeq["GameTickSequence"]
+    TickSeq -->|"GameTick"| TickStream["AsyncStream<GameTick>"]
+    Input --> Merge["merge"]
+    TickStream --> Merge
+    Merge -->|"AsyncStream<GameEvent>"| Simulation["GameSimulation actor"]
     Simulation -->|"GameSnapshot"| Engine
     Engine -->|"Observation"| UI
 ```
@@ -65,14 +68,33 @@ flowchart LR
 
 ゲーム状態は`GameSimulation` actorが排他的に所有します。
 
-- UI操作を`GameCommand: Sendable`として表現
-- 操作を`AsyncStream`経由でactorへ送信
-- 自動落下と操作受付を`TaskGroup`で同時に待機
-- `Task.sleep`でスレッドを占有せず落下間隔を待機
+- UI操作を`GameInput: Sendable`として表現
+- キー入力、タップ、スワイプ、ボタン操作を`AsyncStream<GameInput>`へ流す
+- 自動落下を`GameTickSequence: AsyncSequence`として表現
+- `GameInput`列と`GameTick`列を`AsyncStream<GameEvent>`へmerge
+- `for await event in events`でゲームループを記述
+- `Task.sleep`でスレッドを占有せずtick間隔を待機
+- `.task(id: game.tickConfiguration)`でレベル、pause/resume、restartに応じてtick sequenceを再生成
+- `.task`のキャンセルにより、古いtick sequenceを自然に終了
 - 更新結果を`GameSnapshot: Sendable`としてUIへ返却
 - UI状態の反映は`@MainActor`の`GameEngine`に限定
 
 自動落下は、一定時間ごとに`.tick`を処理し、テトリミノの原点座標`y`を1増やして表現しています。移動先が無効ならテトリミノを盤面へ固定し、ライン消去後に次のテトリミノを生成します。
+
+### AsyncSequenceとしてのゲームループ
+
+この実装では、ゲームを「時間」と「入力」という2種類のイベント列として捉えています。
+
+```swift
+for await event in events {
+    process(event)
+    yieldSnapshot()
+}
+```
+
+`GameSimulation` actorは合成済みの`GameEvent`だけを処理します。これにより、盤面更新、ライン消去、スコア加算、ゲームオーバー判定はactor内に閉じ込められ、SwiftUI側はスナップショットを表示するだけになります。
+
+レベルアップすると`tickConfiguration.level`が変わり、SwiftUIの`.task(id:)`が古い`GameTickSequence`をキャンセルして新しい落下間隔のsequenceを開始します。一時停止やゲームオーバーではtick sequenceを起動せず、入力ストリームだけを残すため、再開やリスタート操作はそのまま受け付けられます。
 
 ## ファイル構成
 
@@ -83,6 +105,7 @@ flowchart LR
 | `GameBoardView.swift` | Canvasによる盤面描画 |
 | `PiecePreviewView.swift` | HOLDとNEXTの描画 |
 | `GameEngine.swift` | SwiftUIとactorを接続する表示モデル |
+| `GameEventSequence.swift` | 入力、tick、イベントmergeのAsyncSequence設計 |
 | `GameSimulation.swift` | ゲームルールと状態を所有するactor |
 | `Tetromino.swift` | 座標、種類、回転形状などの値型 |
 | `TetrominoStyle.swift` | テトリミノの表示色 |
@@ -94,6 +117,10 @@ flowchart LR
 - `Hashable`、`CaseIterable`、`Sendable`への準拠
 - `actor`による共有状態の保護
 - Structured Concurrencyとタスクのキャンセル
-- `AsyncStream`による非同期イベント処理
+- `AsyncStream`によるUI入力のイベント化
+- 独自`AsyncSequence`によるtick表現
+- 複数の非同期イベント列のmerge
+- `for await`によるゲームループ記述
+- `.task(id:)`によるsequence再生成
 - `@MainActor`と`nonisolated`の使い分け
 - ObservationとSwiftUIのデータフロー
