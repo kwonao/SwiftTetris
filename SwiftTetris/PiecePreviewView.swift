@@ -4,42 +4,30 @@ struct PiecePreviewView: View {
     let title: String
     let kind: TetrominoKind?
 
+    private var blocks: Set<GridPoint> {
+        Set(kind?.rotations[0] ?? [])
+    }
+
     var body: some View {
-        VStack(spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-
-            Canvas { context, size in
-                guard let kind else { return }
-                let blocks = kind.rotations[0]
-                let minX = blocks.map(\.x).min() ?? 0
-                let maxX = blocks.map(\.x).max() ?? 0
-                let minY = blocks.map(\.y).min() ?? 0
-                let maxY = blocks.map(\.y).max() ?? 0
-                let width = maxX - minX + 1
-                let height = maxY - minY + 1
-                let cell = min(size.width / CGFloat(width), size.height / CGFloat(height)) * 0.72
-                let offsetX = (size.width - CGFloat(width) * cell) / 2
-                let offsetY = (size.height - CGFloat(height) * cell) / 2
-
-                for block in blocks {
-                    let rect = CGRect(
-                        x: offsetX + CGFloat(block.x - minX) * cell,
-                        y: offsetY + CGFloat(block.y - minY) * cell,
-                        width: cell,
-                        height: cell
-                    ).insetBy(dx: 1, dy: 1)
-                    context.fill(
-                        Path(roundedRect: rect, cornerRadius: cell * 0.16),
-                        with: .color(kind.color)
-                    )
+        GroupBox(title) {
+            Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+                ForEach(0..<4, id: \.self) { y in
+                    GridRow {
+                        ForEach(0..<4, id: \.self) { x in
+                            Rectangle()
+                                .fill(
+                                    blocks.contains(GridPoint(x: x, y: y))
+                                        ? kind?.color ?? .clear
+                                        : .clear
+                                )
+                                .aspectRatio(1, contentMode: .fit)
+                        }
+                    }
                 }
             }
-            .frame(width: 82, height: 62)
+            .frame(width: 44, height: 44)
+            .frame(maxWidth: .infinity)
         }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             kind.map { "\(title)、\($0.displayName)" } ?? "\(title)、なし"

@@ -1,54 +1,36 @@
+import AsyncAlgorithms
 import SwiftUI
 
 struct ContentView: View {
-    @State private var game = GameEngine()
+    @State private var store = GameStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.06, green: 0.08, blue: 0.16),
-                    Color(red: 0.11, green: 0.05, blue: 0.17)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            GeometryReader { proxy in
-                if proxy.size.width > 700 {
-                    wideLayout
-                } else {
-                    compactLayout
-                }
+        GeometryReader { proxy in
+            if proxy.size.width > 700 {
+                wideLayout
+            } else {
+                compactLayout
             }
-            .padding()
         }
-        .tint(.cyan)
-        .preferredColorScheme(.dark)
-        .task(id: game.tickConfiguration) {
-            let configuration = game.tickConfiguration
-            await game.runTickSequence(for: configuration)
-        }
-        .onDisappear {
-            game.stopLoop()
+        .padding(10)
+        .task(id: store.loopID) {
+            await store.runGameLoop()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase != .active {
-                game.pause()
+                store.send(.pause)
             }
         }
     }
 
     private var compactLayout: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             header
 
-            HStack {
-                PiecePreviewView(title: "HOLD", kind: game.heldKind)
-                Spacer()
-                PiecePreviewView(title: "NEXT", kind: game.nextKind)
+            HStack(spacing: 8) {
+                PiecePreviewView(title: "HOLD", kind: store.state.heldKind)
+                PiecePreviewView(title: "NEXT", kind: store.state.nextKind)
             }
 
             board
@@ -59,78 +41,76 @@ struct ContentView: View {
     }
 
     private var wideLayout: some View {
-        HStack(spacing: 24) {
-            VStack(spacing: 16) {
-                PiecePreviewView(title: "HOLD", kind: game.heldKind)
-                Button("ホールド", systemImage: "square.stack.3d.up") {
-                    game.hold()
-                }
-                .buttonStyle(.bordered)
-                .keyboardShortcut("c", modifiers: [])
+        HStack(spacing: 16) {
+            VStack {
+                PiecePreviewView(title: "HOLD", kind: store.state.heldKind)
             }
-            .frame(width: 130)
+            .frame(width: 100)
 
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 header
                 board
                     .frame(maxHeight: .infinity)
                 controls(showsStats: false)
             }
 
-            VStack(spacing: 16) {
-                PiecePreviewView(title: "NEXT", kind: game.nextKind)
+            VStack(spacing: 12) {
+                PiecePreviewView(title: "NEXT", kind: store.state.nextKind)
                 stats
             }
-            .frame(width: 150)
+            .frame(width: 110)
         }
-        .frame(maxWidth: 900)
+        .frame(maxWidth: 1100)
         .frame(maxWidth: .infinity)
     }
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("SWIFT")
-                    .foregroundStyle(.cyan)
-                + Text(" TETRIS")
-                    .foregroundStyle(.white)
-                Text("SwiftUI + Observation + Concurrency")
-                    .font(.caption2)
+                Text("Swift Tetris")
+                    .font(.title2.bold())
+                Text("State → Action → Reducer → View")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .font(.title2.bold())
 
             Spacer()
 
-            if game.phase == .gameOver {
-                Button("もう一度", systemImage: "arrow.clockwise") {
-                    game.newGame()
+            if store.state.phase == .gameOver {
+                Button {
+                    store.send(.newGame)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glass)
+                .accessibilityLabel("もう一度")
             } else {
                 Button {
-                    game.togglePause()
+                    store.send(.togglePause)
                 } label: {
-                    Image(systemName: game.phase == .paused ? "play.fill" : "pause.fill")
-                        .frame(width: 24, height: 24)
+                    Image(
+                        systemName: store.state.phase == .paused
+                            ? "play.fill"
+                            : "pause.fill"
+                    )
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(game.phase == .paused ? "再開" : "一時停止")
+                .buttonStyle(.glass)
+                .accessibilityLabel(store.state.phase == .paused ? "再開" : "一時停止")
                 .keyboardShortcut("p", modifiers: [])
             }
         }
     }
 
     private var board: some View {
-        GameBoardView(game: game)
+        GameBoardView(state: store.state)
             .overlay {
-                if game.phase != .running {
+                if store.state.phase != .running {
                     statusOverlay
                 }
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                game.rotate()
+                store.send(.rotate(clockwise: true))
             }
             .gesture(
                 DragGesture(minimumDistance: 18)
@@ -139,42 +119,43 @@ struct ContentView: View {
     }
 
     private var statusOverlay: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18)
-                .fill(.black.opacity(0.68))
+        VStack(spacing: 12) {
+            Label(
+                store.state.phase == .gameOver ? "ゲームオーバー" : "一時停止中",
+                systemImage: store.state.phase == .gameOver
+                    ? "exclamationmark.triangle"
+                    : "pause.circle"
+            )
+            .font(.title2)
 
-            VStack(spacing: 12) {
-                Image(
-                    systemName: game.phase == .gameOver
-                        ? "exclamationmark.triangle.fill"
-                        : "pause.circle.fill"
-                )
-                .font(.system(size: 42))
-                .foregroundStyle(game.phase == .gameOver ? .orange : .cyan)
-
-                Text(game.phase == .gameOver ? "GAME OVER" : "PAUSED")
-                    .font(.title.bold())
-
-                if game.phase == .gameOver {
-                    Button("ニューゲーム") {
-                        game.newGame()
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button("再開") {
-                        game.togglePause()
-                    }
-                    .buttonStyle(.borderedProminent)
+            if store.state.phase == .gameOver {
+                Button {
+                    store.send(.newGame)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.glass)
+                .accessibilityLabel("ニューゲーム")
+            } else {
+                Button {
+                    store.send(.togglePause)
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("再開")
             }
         }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
     }
 
     private var stats: some View {
         VStack(spacing: 12) {
-            StatView(label: "SCORE", value: game.score.formatted())
-            StatView(label: "LINES", value: game.clearedLines.formatted())
-            StatView(label: "LEVEL", value: game.level.formatted())
+            StatView(label: "SCORE", value: store.state.score.formatted())
+            StatView(label: "LINES", value: store.state.clearedLines.formatted())
+            StatView(label: "LEVEL", value: store.state.level.formatted())
         }
     }
 
@@ -182,37 +163,36 @@ struct ContentView: View {
         VStack(spacing: 10) {
             if showsStats {
                 HStack {
-                    StatView(label: "SCORE", value: game.score.formatted())
-                    StatView(label: "LINES", value: game.clearedLines.formatted())
-                    StatView(label: "LEVEL", value: game.level.formatted())
+                    StatView(label: "SCORE", value: store.state.score.formatted())
+                    StatView(label: "LINES", value: store.state.clearedLines.formatted())
+                    StatView(label: "LEVEL", value: store.state.level.formatted())
                 }
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 ControlButton(systemName: "square.stack.3d.up", label: "HOLD") {
-                    game.hold()
+                    store.send(.hold)
                 }
                 .keyboardShortcut("c", modifiers: [])
 
                 ControlButton(systemName: "arrow.left", label: "左") {
-                    game.moveLeft()
+                    store.send(.moveLeft)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [])
 
                 ControlButton(systemName: "rotate.right", label: "回転") {
-                    game.rotate()
+                    store.send(.rotate(clockwise: true))
                 }
                 .keyboardShortcut(.upArrow, modifiers: [])
 
                 ControlButton(systemName: "arrow.right", label: "右") {
-                    game.moveRight()
+                    store.send(.moveRight)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [])
 
-                ControlButton(systemName: "arrow.down.to.line", label: "落下") {
-                    game.hardDrop()
+                SoftDropButton {
+                    store.send(.softDrop)
                 }
-                .keyboardShortcut(.space, modifiers: [])
             }
         }
     }
@@ -222,13 +202,13 @@ struct ContentView: View {
         let vertical = value.translation.height
 
         if abs(horizontal) > abs(vertical) {
-            horizontal < 0 ? game.moveLeft() : game.moveRight()
+            store.send(horizontal < 0 ? .moveLeft : .moveRight)
         } else if vertical > 70 {
-            game.hardDrop()
+            store.send(.hardDrop)
         } else if vertical > 0 {
-            game.softDrop()
+            store.send(.softDrop)
         } else {
-            game.rotate()
+            store.send(.rotate(clockwise: true))
         }
     }
 }
@@ -243,8 +223,7 @@ private struct StatView: View {
                 .font(.caption2.bold())
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.title3.monospacedDigit().bold())
-                .contentTransition(.numericText())
+                .font(.headline.monospacedDigit())
         }
         .frame(maxWidth: .infinity)
     }
@@ -257,17 +236,50 @@ private struct ControlButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemName)
-                    .font(.title3)
-                Text(label)
-                    .font(.caption2)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 48)
+            Image(systemName: systemName)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(maxWidth: .infinity)
         .accessibilityLabel(label)
+    }
+}
+
+private struct SoftDropButton: View {
+    let action: () -> Void
+
+    @State private var isPressed = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("落下")
+        .accessibilityHint("押している間、速く落下します")
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    isPressed = true
+                }
+                .onEnded { _ in
+                    isPressed = false
+                }
+        )
+        .task(id: isPressed) {
+            guard isPressed else { return }
+            let repeats = AsyncTimerSequence.repeating(
+                every: .milliseconds(65),
+                tolerance: .milliseconds(5)
+            )
+
+            for await _ in repeats {
+                guard isPressed else { return }
+                action()
+            }
+        }
     }
 }
 
