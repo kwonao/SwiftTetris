@@ -1,7 +1,5 @@
 # SwiftTetris
 
-## SwiftUIだけでテトリスを作ったら、状態管理の勉強になりすぎた
-
 SwiftUIの`Grid`で盤面を描画し、Observation、`.task`、Swift Async Algorithmsの`AsyncTimerSequence`でゲームを動かすテトリスです。SpriteKitは使用していません。
 
 ## 全体アーキテクチャ
